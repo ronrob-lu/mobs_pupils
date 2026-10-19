@@ -88,6 +88,46 @@ local function find_nearest_block(pos, block_name, radius)
 	return nearest
 end
 
+-- Helper: Find a suitable ground position near center_pos
+local function find_ground_pos(center_pos, min_r, max_r)
+	if not center_pos then return nil end
+	for _ = 1, 12 do
+		local rx = math.random(-max_r, max_r)
+		local rz = math.random(-max_r, max_r)
+		if math.abs(rx) >= min_r or math.abs(rz) >= min_r then
+			local tx = center_pos.x + rx
+			local tz = center_pos.z + rz
+			local base_y = math.floor(center_pos.y)
+			for ty = base_y + 2, base_y - 3, -1 do
+				local pos_below = {x = tx, y = ty - 1, z = tz}
+				local pos_at = {x = tx, y = ty, z = tz}
+				local pos_above = {x = tx, y = ty + 1, z = tz}
+
+				local node_below = minetest.get_node_or_nil(pos_below)
+				local node_at = minetest.get_node_or_nil(pos_at)
+				local node_above = minetest.get_node_or_nil(pos_above)
+
+				if node_below and node_at and node_above then
+					local def_below = minetest.registered_nodes[node_below.name]
+					local def_at = minetest.registered_nodes[node_at.name]
+					local def_above = minetest.registered_nodes[node_above.name]
+
+					local below_walkable = def_below and def_below.walkable ~= false
+					local at_walkable = def_at and def_at.walkable == true
+					local above_walkable = def_above and def_above.walkable == true
+
+					if below_walkable and not at_walkable and not above_walkable and
+					   node_below.name ~= "mobs_pupils:school_block" and
+					   node_below.name ~= "mobs_pupils:home_block" then
+						return {x = tx, y = ty, z = tz}
+					end
+				end
+			end
+		end
+	end
+	return nil
+end
+
 -- Helper: Place toy block nearby if standing near home block
 local function try_place_toy(pos)
 	if #toycity_blocks == 0 then return end
@@ -196,106 +236,128 @@ mobs:register_mob("mobs_pupils:pupil", {
 
 	do_custom = function(self, dtime)
 		self.timer = (self.timer or 0) + dtime
-		self.path_recalc_timer = (self.path_recalc_timer or 0) + dtime
+		self.roam_timer = (self.roam_timer or 0) - dtime
 
 		local pos = self.object:get_pos()
 		if not pos then return end
 
 		local school_time = is_school_time()
 		local target_block_type = school_time and "mobs_pupils:school_block" or "mobs_pupils:home_block"
-		local target_pos = find_nearest_block(pos, target_block_type, 30)
+		local anchor_pos = find_nearest_block(pos, target_block_type, 30)
 
-		if not target_pos and self.owner and self.owner ~= "" then
+		if not anchor_pos and self.owner and self.owner ~= "" then
 			local parent = minetest.get_player_by_name(self.owner)
 			if parent then
 				local ppos = parent:get_pos()
 				if ppos and vector.distance(pos, ppos) < 30 then
-					target_pos = vector.round(ppos)
+					anchor_pos = vector.round(ppos)
 				end
 			end
 		end
 
-		if target_pos then
-			local dist = vector.distance(pos, target_pos)
-			if dist > 2 then
-				-- Recalculate path periodically or if no current path
-				if not self.current_path or #self.current_path == 0 or self.path_recalc_timer >= 1.5 then
-					self.path_recalc_timer = 0
-					local start_pos = vector.round(pos)
-					local path = minetest.find_path(start_pos, target_pos, 20, 1, 2, "A*")
-					if path and #path > 1 then
-						self.current_path = path
-						self.path_index = 2
-					else
-						self.current_path = nil
-					end
+		-- Reset target when active block type changes (e.g. school time transition)
+		if self.last_anchor_type ~= target_block_type then
+			self.last_anchor_type = target_block_type
+			self.roam_target = nil
+			self.roam_timer = 0
+		end
+
+		-- Pick or update roaming target
+		if not self.roam_target or self.roam_timer <= 0 or vector.distance(pos, self.roam_target) > 35 then
+			local new_target = nil
+			if anchor_pos then
+				local dist_to_anchor = vector.distance(pos, anchor_pos)
+				if dist_to_anchor > 12 then
+					new_target = find_ground_pos(anchor_pos, 1, 4)
+				else
+					new_target = find_ground_pos(anchor_pos, 2, 7)
 				end
+			else
+				new_target = find_ground_pos(vector.round(pos), 2, 6)
+			end
 
-				-- Determine next position/waypoint
-				local next_pos = nil
-				if self.current_path and self.path_index and self.current_path[self.path_index] then
-					next_pos = self.current_path[self.path_index]
-					local dist_to_waypoint = vector.distance(
-						{x = pos.x, y = pos.y, z = pos.z},
-						{x = next_pos.x, y = pos.y, z = next_pos.z}
-					)
-					if dist_to_waypoint < 0.6 then
-						self.path_index = self.path_index + 1
-						next_pos = self.current_path[self.path_index]
-					end
-				end
-
-				if not next_pos then
-					next_pos = target_pos
-				end
-
-				-- Move towards next_pos
-				local dx = next_pos.x - pos.x
-				local dz = next_pos.z - pos.z
-				if math.abs(dx) > 0.01 or math.abs(dz) > 0.01 then
-					local yaw = math.atan2(dz, dx) - math.pi / 2
-					self.object:set_yaw(yaw)
-
-					local vel = self.object:get_velocity() or {x = 0, y = 0, z = 0}
-					local current_y = vel.y
-					local speed = self.walk_velocity or 1.5
-
-					local dir_x = -math.sin(yaw)
-					local dir_z = math.cos(yaw)
-
-					-- Obstacle check: Jump over 1-node high block if blocked
-					local check_pos = {
-						x = math.floor(pos.x + dir_x * 0.6 + 0.5),
-						y = math.floor(pos.y + 0.1),
-						z = math.floor(pos.z + dir_z * 0.6 + 0.5)
+			if not new_target then
+				if anchor_pos then
+					new_target = {
+						x = anchor_pos.x + math.random(-2, 2),
+						y = anchor_pos.y,
+						z = anchor_pos.z + math.random(-2, 2)
 					}
-					local node_ahead = minetest.get_node_or_nil(check_pos)
-					if node_ahead and node_ahead.name ~= "air" and node_ahead.name ~= "ignore" then
-						local def = minetest.registered_nodes[node_ahead.name]
-						if def and def.walkable ~= false and math.abs(current_y) < 0.1 then
-							current_y = 4.2
-						end
+				else
+					new_target = vector.round(pos)
+				end
+			end
+
+			self.roam_target = new_target
+			self.roam_timer = math.random(4, 8)
+			-- 1 in 3 chance to run, otherwise walk
+			self.move_speed = (math.random(1, 3) == 1) and (self.run_velocity or 2.5) or (self.walk_velocity or 1.5)
+		end
+
+		-- Move towards roam_target
+		if self.roam_target then
+			local dx = self.roam_target.x - pos.x
+			local dz = self.roam_target.z - pos.z
+			local dist_h = math.sqrt(dx * dx + dz * dz)
+
+			if dist_h > 0.8 then
+				local yaw = math.atan2(dz, dx) - math.pi / 2
+				self.object:set_yaw(yaw)
+
+				local vel = self.object:get_velocity() or {x = 0, y = 0, z = 0}
+				local current_y = vel.y
+				local speed = self.move_speed or self.walk_velocity or 1.5
+
+				local dir_x = -math.sin(yaw)
+				local dir_z = math.cos(yaw)
+
+				-- Obstacle check & jump logic
+				local check_pos = {
+					x = math.floor(pos.x + dir_x * 0.6 + 0.5),
+					y = math.floor(pos.y + 0.1),
+					z = math.floor(pos.z + dir_z * 0.6 + 0.5)
+				}
+				local node_ahead = minetest.get_node_or_nil(check_pos)
+				if node_ahead and node_ahead.name ~= "air" and node_ahead.name ~= "ignore" then
+					local def = minetest.registered_nodes[node_ahead.name]
+					-- Only jump over normal terrain nodes, NOT school/home blocks
+					if def and def.walkable ~= false and
+					   node_ahead.name ~= "mobs_pupils:school_block" and
+					   node_ahead.name ~= "mobs_pupils:home_block" and
+					   math.abs(current_y) < 0.1 and
+					   pos.y <= self.roam_target.y + 0.5 then
+						current_y = 4.2
 					end
+				end
 
-					self.object:set_velocity({
-						x = dir_x * speed,
-						y = current_y,
-						z = dir_z * speed
-					})
+				self.object:set_velocity({
+					x = dir_x * speed,
+					y = current_y,
+					z = dir_z * speed
+				})
 
-					if mobs.set_animation then
+				if mobs.set_animation then
+					if speed > 2.0 then
+						mobs:set_animation(self, "run")
+					else
 						mobs:set_animation(self, "walk")
 					end
 				end
 			else
-				-- Stays around block
+				-- Reached roam destination spot
 				local vel = self.object:get_velocity() or {x = 0, y = 0, z = 0}
 				self.object:set_velocity({x = 0, y = vel.y, z = 0})
+
 				if mobs.set_animation then
 					mobs:set_animation(self, "stand")
 				end
-				self.current_path = nil
 
+				-- Short pause before picking next spot
+				if self.roam_timer > 3 then
+					self.roam_timer = math.random(1, 3)
+				end
+
+				-- If off school, try placing toy near home
 				if not school_time then
 					if self.timer >= 2.0 then
 						self.timer = 0
@@ -303,8 +365,6 @@ mobs:register_mob("mobs_pupils:pupil", {
 					end
 				end
 			end
-		else
-			self.current_path = nil
 		end
 	end,
 })
