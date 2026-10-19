@@ -195,11 +195,18 @@ mobs:register_mob("mobs_pupils:pupil", {
 			local dist = vector.distance(pos, target_pos)
 			if dist > 2 then
 				if self.object and self.object:get_luaentity() then
-					mobs:walk(self)
-					-- Orient towards target
+					-- Orient towards target and move forward
 					local vec = vector.subtract(target_pos, pos)
 					local yaw = math.atan2(vec.z, vec.x) - math.pi / 2
 					self.object:set_yaw(yaw)
+					local vel = self.object:get_velocity()
+					local current_y = vel and vel.y or 0
+					local speed = self.walk_velocity or 1.5
+					self.object:set_velocity({
+						x = -math.sin(yaw) * speed,
+						y = current_y,
+						z = math.cos(yaw) * speed
+					})
 				end
 			else
 				-- Stays around block
@@ -218,7 +225,14 @@ mobs:register_mob("mobs_pupils:pupil", {
 						local vec = vector.subtract(ppos, pos)
 						local yaw = math.atan2(vec.z, vec.x) - math.pi / 2
 						self.object:set_yaw(yaw)
-						mobs:walk(self)
+						local vel = self.object:get_velocity()
+						local current_y = vel and vel.y or 0
+						local speed = self.walk_velocity or 1.5
+						self.object:set_velocity({
+							x = -math.sin(yaw) * speed,
+							y = current_y,
+							z = math.cos(yaw) * speed
+						})
 					end
 				end
 			end
