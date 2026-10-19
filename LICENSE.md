@@ -24,4 +24,4 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ### Asset Licenses
 
-- **Textures and Audio / Visual Assets**: CC0 (Creative Commons Zero 1.0 Universal / Public Domain) by kenney.nl
+- **Textures and Audio / Visual Assets**: CC0 (Creative Commons Zero 1.0 Universal / Public Domain) by ronrob-lu

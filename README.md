@@ -55,4 +55,4 @@ Bring life, learning, and playful energy to your Minetest / Luanti world! 🎒�
 ## ⚖️ License
 
 - **Code**: MIT License © 2026 ronrob-lu
-- **Textures & Media**: CC0 1.0 Universal (Kenney - kenney.nl)
+- **Textures & Media**: CC0 1.0 Universal (ronrob-lu)
