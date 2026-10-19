@@ -4,6 +4,15 @@
 
 mobs_pupils = {}
 
+-- Pupil names pool for natural identity
+local pupil_names = {
+	"Alex", "Sam", "Emma", "Liam", "Olivia", "Noah", "Ava", "Ethan",
+	"Sophia", "Lucas", "Mia", "Jackson", "Isabella", "Oliver", "Charlotte",
+	"Aiden", "Amelia", "Elijah", "Harper", "James", "Evelyn", "Benjamin",
+	"Abigail", "Mason", "Emily", "Logan", "Ella", "Alexander", "Elizabeth",
+	"Jacob", "Sofia", "Michael", "Avery", "Daniel", "Ella", "Henry", "Scarlett"
+}
+
 -- Cache toycity nodes if present
 local toycity_blocks = {}
 if minetest.get_modpath("toycity") then
@@ -51,7 +60,7 @@ if minetest.get_modpath("default") then
 	})
 end
 
--- Helper: Helper to check if current time is school time (7000 to 12000)
+-- Helper: Check if current time is school time (7000 to 12000)
 local function is_school_time()
 	local timeofday = (minetest.get_timeofday() or 0) * 24000
 	return timeofday >= 7000 and timeofday <= 12000
@@ -123,18 +132,23 @@ mobs:register_mob("mobs_pupils:pupil", {
 	hp_min = 10,
 	hp_max = 20,
 	armor = 100,
-	collisionbox = {-0.25, 0.0, -0.25, 0.25, 0.9, 0.25},
+	collisionbox = {-0.2, 0.0, -0.2, 0.2, 0.88, 0.2},
 	visual = "mesh",
 	mesh = "character.b3d",
 	textures = {
-		{"mobs_pupils_pupil.png"}
+		{"beach_npc.png"},
+		{"beach_npc_2.png"},
+		{"beach_npc_3.png"},
+		{"beach_npc_4.png"},
+		{"beach_npc_5.png"},
+		{"beach_npc_6.png"},
 	},
 	visual_size = {x = 0.5, y = 0.5}, -- Half size of standard player
 	makes_footstep_sound = true,
 	walk_velocity = 1.5,
 	run_velocity = 2.5,
 	jump = true,
-	jump_height = 2,
+	jump_height = 4,
 	stepheight = 1.1,
 	fear_height = 3,
 	water_damage = 0,
@@ -143,6 +157,8 @@ mobs:register_mob("mobs_pupils:pupil", {
 	view_range = 15,
 	owner = "",
 	order = "roam",
+	pushable = true,
+	pathfinding = 1,
 	animation = {
 		speed_normal = 15,
 		speed_run = 30,
@@ -156,7 +172,8 @@ mobs:register_mob("mobs_pupils:pupil", {
 	follow = {"default:apple", "default:paper", "default:book"},
 
 	on_spawn = function(self)
-		self.nametag = "Pupil"
+		local name = pupil_names[math.random(1, #pupil_names)]
+		self.nametag = name
 		self.object:set_properties({
 			nametag = self.nametag,
 			nametag_color = "#FFFFFF",
@@ -166,22 +183,20 @@ mobs:register_mob("mobs_pupils:pupil", {
 	on_rightclick = function(self, clicker)
 		if not clicker or not clicker:is_player() then return end
 		local player_name = clicker:get_player_name()
+		local mob_name = self.nametag or "Pupil"
 
 		-- Set parent if not set
 		if not self.owner or self.owner == "" then
 			self.owner = player_name
-			minetest.chat_send_player(player_name, "Pupil: You are now my parent!")
+			minetest.chat_send_player(player_name, mob_name .. ": You are now my parent!")
 		else
-			minetest.chat_send_player(player_name, "Pupil: Hello, " .. clicker:get_player_name() .. "!")
+			minetest.chat_send_player(player_name, mob_name .. ": Hello, " .. player_name .. "!")
 		end
 	end,
 
 	do_custom = function(self, dtime)
 		self.timer = (self.timer or 0) + dtime
-		if self.timer < 2.0 then
-			return
-		end
-		self.timer = 0
+		self.path_recalc_timer = (self.path_recalc_timer or 0) + dtime
 
 		local pos = self.object:get_pos()
 		if not pos then return end
@@ -190,52 +205,106 @@ mobs:register_mob("mobs_pupils:pupil", {
 		local target_block_type = school_time and "mobs_pupils:school_block" or "mobs_pupils:home_block"
 		local target_pos = find_nearest_block(pos, target_block_type, 30)
 
+		if not target_pos and self.owner and self.owner ~= "" then
+			local parent = minetest.get_player_by_name(self.owner)
+			if parent then
+				local ppos = parent:get_pos()
+				if ppos and vector.distance(pos, ppos) < 30 then
+					target_pos = vector.round(ppos)
+				end
+			end
+		end
+
 		if target_pos then
-			-- Walk towards the designated school or home block
 			local dist = vector.distance(pos, target_pos)
 			if dist > 2 then
-				if self.object and self.object:get_luaentity() then
-					-- Orient towards target and move forward
-					local vec = vector.subtract(target_pos, pos)
-					local yaw = math.atan2(vec.z, vec.x) - math.pi / 2
+				-- Recalculate path periodically or if no current path
+				if not self.current_path or #self.current_path == 0 or self.path_recalc_timer >= 1.5 then
+					self.path_recalc_timer = 0
+					local start_pos = vector.round(pos)
+					local path = minetest.find_path(start_pos, target_pos, 20, 1, 2, "A*")
+					if path and #path > 1 then
+						self.current_path = path
+						self.path_index = 2
+					else
+						self.current_path = nil
+					end
+				end
+
+				-- Determine next position/waypoint
+				local next_pos = nil
+				if self.current_path and self.path_index and self.current_path[self.path_index] then
+					next_pos = self.current_path[self.path_index]
+					local dist_to_waypoint = vector.distance(
+						{x = pos.x, y = pos.y, z = pos.z},
+						{x = next_pos.x, y = pos.y, z = next_pos.z}
+					)
+					if dist_to_waypoint < 0.6 then
+						self.path_index = self.path_index + 1
+						next_pos = self.current_path[self.path_index]
+					end
+				end
+
+				if not next_pos then
+					next_pos = target_pos
+				end
+
+				-- Move towards next_pos
+				local dx = next_pos.x - pos.x
+				local dz = next_pos.z - pos.z
+				if math.abs(dx) > 0.01 or math.abs(dz) > 0.01 then
+					local yaw = math.atan2(dz, dx) - math.pi / 2
 					self.object:set_yaw(yaw)
-					local vel = self.object:get_velocity()
-					local current_y = vel and vel.y or 0
+
+					local vel = self.object:get_velocity() or {x = 0, y = 0, z = 0}
+					local current_y = vel.y
 					local speed = self.walk_velocity or 1.5
+
+					local dir_x = -math.sin(yaw)
+					local dir_z = math.cos(yaw)
+
+					-- Obstacle check: Jump over 1-node high block if blocked
+					local check_pos = {
+						x = math.floor(pos.x + dir_x * 0.6 + 0.5),
+						y = math.floor(pos.y + 0.1),
+						z = math.floor(pos.z + dir_z * 0.6 + 0.5)
+					}
+					local node_ahead = minetest.get_node_or_nil(check_pos)
+					if node_ahead and node_ahead.name ~= "air" and node_ahead.name ~= "ignore" then
+						local def = minetest.registered_nodes[node_ahead.name]
+						if def and def.walkable ~= false and math.abs(current_y) < 0.1 then
+							current_y = 4.2
+						end
+					end
+
 					self.object:set_velocity({
-						x = -math.sin(yaw) * speed,
+						x = dir_x * speed,
 						y = current_y,
-						z = math.cos(yaw) * speed
+						z = dir_z * speed
 					})
+
+					if mobs.set_animation then
+						mobs:set_animation(self, "walk")
+					end
 				end
 			else
 				-- Stays around block
-				if not school_time then
-					try_place_toy(pos)
+				local vel = self.object:get_velocity() or {x = 0, y = 0, z = 0}
+				self.object:set_velocity({x = 0, y = vel.y, z = 0})
+				if mobs.set_animation then
+					mobs:set_animation(self, "stand")
 				end
-			end
-		else
-			-- No block found, follow parent player if registered and nearby
-			if self.owner and self.owner ~= "" then
-				local parent = minetest.get_player_by_name(self.owner)
-				if parent then
-					local ppos = parent:get_pos()
-					local pdist = vector.distance(pos, ppos)
-					if pdist > 3 and pdist < 30 then
-						local vec = vector.subtract(ppos, pos)
-						local yaw = math.atan2(vec.z, vec.x) - math.pi / 2
-						self.object:set_yaw(yaw)
-						local vel = self.object:get_velocity()
-						local current_y = vel and vel.y or 0
-						local speed = self.walk_velocity or 1.5
-						self.object:set_velocity({
-							x = -math.sin(yaw) * speed,
-							y = current_y,
-							z = math.cos(yaw) * speed
-						})
+				self.current_path = nil
+
+				if not school_time then
+					if self.timer >= 2.0 then
+						self.timer = 0
+						try_place_toy(pos)
 					end
 				end
 			end
+		else
+			self.current_path = nil
 		end
 	end,
 })
